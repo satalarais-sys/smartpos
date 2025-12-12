@@ -1,92 +1,110 @@
 <?php
-defined('BASEPATH') OR exit('No direct script access allowed');
-
 class Pos extends CI_Controller {
 
     public function __construct() {
         parent::__construct();
         check_login();
-        $this->load->model(['Product_model']);
-        $this->load->library('cart');
+        $this->load->model("Pos_model");
+        $this->load->model("Product_model");
     }
 
-    public function index() {
+    public function index()
+    {
         $data['title'] = "POS";
-        $data['products'] = $this->Product_model->get_all();
+        $data['cart'] = $this->Pos_model->get_cart();
         $data['content'] = "pos/index";
-        $this->load->view('template', $data);
+        $this->load->view("template", $data);
     }
 
-    public function scan() {
-        $barcode = $this->input->post('barcode');
-
-        $product = $this->db->get_where('products', ['barcode' => $barcode])->row();
+    public function scan()
+    {
+        $barcode = $this->input->post("barcode");
+        $product = $this->Pos_model->find_barcode($barcode);
 
         if (!$product) {
-            echo json_encode(['status' => false, 'msg' => 'Product not found']);
-            return;
+            $this->session->set_flashdata("error","Barcode tidak ditemukan");
+            redirect("pos");
         }
 
-        // Add to cart
-        $cart_item = [
-            'id' => $product->id,
-            'qty' => 1,
-            'price' => $product->price,
-            'name' => $product->name
-        ];
-        $this->cart->insert($cart_item);
+        $check = $this->Pos_model->check_cart_item($product->id);
 
-        echo json_encode(['status' => true]);
+        if ($check) {
+            $new_qty = $check->qty + 1;
+            $new_total = $new_qty * $check->price;
+
+            $this->Pos_model->update_cart($check->id, [
+                "qty" => $new_qty,
+                "total" => $new_total
+            ]);
+        } else {
+            $insert = [
+                "product_id" => $product->id,
+                "price" => $product->price,
+                "qty" => 1,
+                "total" => $product->price
+            ];
+            $this->Pos_model->add_cart($insert);
+        }
+
+        redirect("pos");
     }
 
-    public function remove($rowid) {
-        $this->cart->remove($rowid);
-        redirect('pos');
+    public function delete_item($id)
+    {
+        $this->Pos_model->delete_item($id);
+        redirect("pos");
     }
 
-    public function reset() {
-        $this->cart->destroy();
-        redirect('pos');
-    }
-
-    public function checkout() {
-
-        $invoice = "INV" . time();
-        $total = $this->cart->total();
-        $paid = $this->input->post('paid');
+    public function process_payment()
+    {
+        $total = $this->input->post("total");
+        $paid = $this->input->post("paid");
         $change = $paid - $total;
 
-        // Insert sales
-        $this->db->insert('sales', [
-            'invoice' => $invoice,
-            'total' => $total,
-            'paid' => $paid,
-            'change_amount' => $change
+        // simpan header
+        $invoice = "INV".time();
+
+        $this->db->insert("sales", [
+            "invoice" => $invoice,
+            "total" => $total,
+            "paid" => $paid,
+            "change_money" => $change
         ]);
 
-        $sales_id = $this->db->insert_id();
+        $sale_id = $this->db->insert_id();
 
-        // Insert detail & reduce stock
-        foreach ($this->cart->contents() as $c) {
-            
-            // Insert detail
-            $this->db->insert('sales_detail', [
-                'sales_id' => $sales_id,
-                'product_id' => $c['id'],
-                'price' => $c['price'],
-                'qty' => $c['qty'],
-                'total' => $c['subtotal']
+        // simpan detail
+        $cart = $this->Pos_model->get_cart();
+        foreach ($cart as $c) {
+            $this->db->insert("sales_detail", [
+                "sale_id" => $sale_id,
+                "product_id" => $c->product_id,
+                "price" => $c->price,
+                "qty" => $c->qty,
+                "total" => $c->total
             ]);
 
-            // Reduce stock
-            $this->db->set('stock', 'stock - ' . $c['qty'], FALSE);
-            $this->db->where('id', $c['id']);
-            $this->db->update('products');
+            // kurangi stok
+            $product = $this->Product_model->get($c->product_id);
+            $new_stock = $product->stock - $c->qty;
+
+            $this->Product_model->update($product->id, ["stock" => $new_stock]);
         }
 
-        $this->cart->destroy();
+        // kosongkan keranjang
+        $this->Pos_model->clear_cart();
 
-        $this->session->set_flashdata('msg', 'Transaction completed');
-        redirect('pos');
+        // redirect ke struk
+        redirect("pos/receipt/".$sale_id);
+    }
+
+    public function receipt($sale_id)
+    {
+        $data['sale'] = $this->db->get_where("sales", ["id" => $sale_id])->row();
+        $data['detail'] = $this->db->select("sales_detail.*, products.name")
+                                   ->join("products","products.id = sales_detail.product_id")
+                                   ->get_where("sales_detail", ["sale_id" => $sale_id])->result();
+
+        $this->load->view("pos/receipt", $data);
     }
 }

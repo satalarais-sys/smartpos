@@ -1,14 +1,15 @@
-<?php
-function check_login() {
-    $CI =& get_instance();
-    if (!$CI->session->userdata('user_id')) {
+<?php if (!defined('BASEPATH')) exit('No direct script access allowed');
+
+function is_logged_in()
+{
+    $ci = get_instance();
+    if (!$ci->session->userdata('user_id')) {
         redirect('auth/login');
     }
 }
 
-function check_admin() {
-    $CI =& get_instance();
-    if ($CI->session->userdata('role') != 'admin') {
-        show_error("Access Denied.", 403);
-    }
+function is_admin()
+{
+    $ci = get_instance();
+    return ($ci->session->userdata('role') == 'admin');
 }
